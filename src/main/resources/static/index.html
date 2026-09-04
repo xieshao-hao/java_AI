@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>DeepSeek 聊天</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f5f5; height: 100vh; display: flex; flex-direction: column; }
+        header { background: #1677ff; color: white; padding: 12px 20px; font-size: 16px; font-weight: 600; }
+        #chat-box { flex: 1; overflow-y: auto; padding: 20px; }
+        .msg { margin-bottom: 12px; max-width: 70%; padding: 10px 14px; border-radius: 8px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+        .user { background: #1677ff; color: white; margin-left: auto; }
+        .bot  { background: white; color: #333; border: 1px solid #e0e0e0; }
+        #input-box { display: flex; padding: 12px; background: white; border-top: 1px solid #ddd; }
+        #msg-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+        #send-btn { margin-left: 8px; padding: 10px 20px; background: #1677ff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        #send-btn:hover { background: #0958d9; }
+        #send-btn:disabled { background: #aaa; cursor: not-allowed; }
+        #doc-panel { display: none; position: absolute; top: 52px; right: 16px; width: 320px; max-height: 60vh; overflow-y: auto; background: white; border: 1px solid #e0e0e0; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.15); padding: 12px; z-index: 100; }
+        #doc-panel h3 { font-size: 14px; margin-bottom: 10px; }
+        .doc-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+        .doc-item .del { background: #ff4d4f; color: white; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+        .doc-item .del:hover { background: #d9363e; }
+        .doc-empty { color: #999; font-size: 13px; text-align: center; padding: 12px 0; }
+        .tool { background: #f6ffed; color: #555; border: 1px solid #b7eb8f; font-size: 13px; max-width: 85%; }
+    </style>
+</head>
+<body>
+    <header style="position:relative">
+        <span>DeepSeek 聊天助手</span>
+        <input id="file-input" type="file" accept=".pdf,.doc,.docx,.txt,.md" style="display:none">
+        <button id="upload-btn" onclick="document.getElementById('file-input').click()"
+                style="margin-left:12px;padding:4px 12px;background:white;color:#1677ff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">
+            上传知识库文档
+        </button>
+        <button id="manage-btn" onclick="toggleDocPanel()"
+                style="margin-left:8px;padding:4px 12px;background:rgba(255,255,255,.2);color:white;border:1px solid rgba(255,255,255,.6);border-radius:4px;cursor:pointer;font-size:13px;">
+            知识库管理
+        </button>
+    </header>
+    <div id="doc-panel">
+        <h3>已入库文档</h3>
+        <div id="doc-list"></div>
+    </div>
+    <div id="chat-box"></div>
+    <div id="input-box">
+        <input id="msg-input" type="text" placeholder="输入问题，回车发送..." autocomplete="off">
+        <button id="send-btn">发送</button>
+    </div>
+
+    <script>
+        const chatBox = document.getElementById('chat-box');
+        const msgInput = document.getElementById('msg-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        const fileInput = document.getElementById('file-input');
+        fileInput.addEventListener('change', async () => {
+            const file = fileInput.files[0];
+            if (!file) return;
+            const fd = new FormData();
+            fd.append('file', file);
+            appendMsg('正在上传文档：' + file.name + '，解析中...', 'bot');
+            try {
+                const res = await fetch('/knowledge/upload', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (res.ok) {
+                    appendMsg('文档入库成功：' + data.fileName + '，切分片段数：' + data.chunks, 'bot');
+                    if (document.getElementById('doc-panel').style.display === 'block') loadDocList();
+                } else {
+                    appendMsg('上传失败：' + data.error, 'bot');
+                }
+            } catch (err) {
+                appendMsg('上传失败：' + err.message, 'bot');
+            }
+            fileInput.value = '';
+        });
+
+        function toggleDocPanel() {
+            const panel = document.getElementById('doc-panel');
+            const visible = panel.style.display === 'block';
+            panel.style.display = visible ? 'none' : 'block';
+            if (!visible) loadDocList();
+        }
+
+        async function loadDocList() {
+            const list = document.getElementById('doc-list');
+            try {
+                const res = await fetch('/knowledge/documents');
+                const docs = await res.json();
+                if (!docs.length) { list.innerHTML = '<div class="doc-empty">暂无文档，请先上传</div>'; return; }
+                list.innerHTML = docs.map(d =>
+                    '<div class="doc-item"><span>' + d.fileName + '（' + d.chunks + ' 片段）</span>' +
+                    '<button class="del" onclick="deleteDoc(\'' + encodeURIComponent(d.fileName) + '\')">删除</button></div>'
+                ).join('');
+            } catch (err) {
+                list.innerHTML = '<div class="doc-empty">加载失败：' + err.message + '</div>';
+            }
+        }
+
+        async function deleteDoc(name) {
+            if (!confirm('确定删除该文档的全部片段吗？')) return;
+            try {
+                const res = await fetch('/knowledge/document?fileName=' + name, { method: 'DELETE' });
+                const data = await res.json();
+                appendMsg(res.ok ? data.message : data.error, 'bot');
+                loadDocList();
+            } catch (err) {
+                appendMsg('删除失败：' + err.message, 'bot');
+            }
+        }
+
+        function appendMsg(text, role) {
+            const div = document.createElement('div');
+            div.className = 'msg ' + role;
+            div.textContent = text;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        const conversationId = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
+
+        async function send() {
+            const msg = msgInput.value.trim();
+            if (!msg) return;
+            appendMsg(msg, 'user');
+            msgInput.value = '';
+            sendBtn.disabled = true;
+            sendBtn.textContent = '回答中...';
+
+            const div = document.createElement('div');
+            div.className = 'msg bot';
+            div.textContent = '';
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+
+            const es = new EventSource('/chat/stream?msg=' + encodeURIComponent(msg) + '&conversationId=' + encodeURIComponent(conversationId));
+            es.onmessage = e => {
+                if (e.data === '[DONE]') { es.close(); finish(); return; }
+                if (e.data && e.data.startsWith('🔧')) { appendMsg(e.data, 'tool'); return; }
+                div.textContent += e.data || '';
+                chatBox.scrollTop = chatBox.scrollHeight;
+            };
+            es.onerror = () => {
+                es.close();
+                if (!div.textContent) div.textContent = '（未收到回复，请查看后端日志）';
+                finish();
+            };
+        }
+
+        function finish() {
+            sendBtn.disabled = false;
+            sendBtn.textContent = '发送';
+            msgInput.focus();
+        }
+
+        sendBtn.addEventListener('click', send);
+        msgInput.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+    </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+spring:
+  profiles:
+    active: local
+  ai:
+    openai:
+      api-key: ${deepseek.api-key}
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.3
+      embedding:
+        base-url: https://api.siliconflow.cn
+        api-key: ${siliconflow.api-key}
+        options:
+          model: BAAI/bge-m3
+
+    vectorstore:
+      milvus:
+        collection-name: knowledge_base
+        embedding-dimension: 1024
+        initialize-schema: true
+        client:
+          host: localhost
+          port: 19530
+
+server:
+  port: 8080
+
+logging:
+  level:
+    org.springframework.ai: DEBUG
+    org.springframework.web.client: DEBUG
+    org.apache.hc: DEBUG
+
+app:
+  rerank:
+    base-url: https://api.siliconflow.cn
+    api-key: ${siliconflow.api-key}
+    model: BAAI/bge-reranker-v2-m3
