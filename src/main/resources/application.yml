@@ -1,6 +1,11 @@
 spring:
   profiles:
     active: local
+  data:
+    redis:
+      host: localhost
+      port: 6380
+      # timeout: 2000
   ai:
     openai:
       api-key: ${deepseek.api-key}

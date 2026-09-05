@@ -60,6 +60,20 @@ services:
       - "etcd"
       - "minio"
 
+  redis:
+    container_name: chat-redis
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/redis:/data
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 networks:
   default:
     name: milvus

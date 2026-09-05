@@ -117,7 +117,11 @@
             chatBox.scrollTop = chatBox.scrollHeight;
         }
 
-        const conversationId = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
+        let conversationId = sessionStorage.getItem('conversationId');
+        if (!conversationId) {
+            conversationId = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
+            sessionStorage.setItem('conversationId', conversationId);
+        }
 
         async function send() {
             const msg = msgInput.value.trim();
