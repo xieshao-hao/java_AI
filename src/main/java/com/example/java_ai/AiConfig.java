@@ -1,6 +1,8 @@
 package com.example.java_ai;
 
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
@@ -20,6 +22,9 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class AiConfig {
 
+    /** 来源展示的最低相关度阈值：低于此值的检索片段不作为参考来源推送 */
+    private static final float SOURCE_MIN_SCORE = 0.5f;
+
     @Bean
     ChatMemory chatMemory(RedisChatMemoryRepository redisChatMemoryRepository) {
         return MessageWindowChatMemory.builder()
@@ -31,7 +36,9 @@ public class AiConfig {
 
     @Bean
     ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore, ChatMemory chatMemory,
-                          KnowledgeTools knowledgeTools, RerankService rerankService) {
+                          KnowledgeTools knowledgeTools, RerankService rerankService,
+                          HistoryAwareQueryTransformer historyAwareQueryTransformer,
+                          ToolCallTracker toolCallTracker) {
         return builder
                 .defaultSystem("你是一个友好、严谨的中文 AI 助手。请使用简洁的中文回答用户的问题，"
                         + "如果不确定答案请明确说明，不要编造内容。回答时优先依据知识库中检索到的上下文。"
@@ -44,6 +51,8 @@ public class AiConfig {
                         PromptChatMemoryAdvisor.builder(chatMemory).build(),
                         // 两阶段 RAG 检索：向量召回 Top-20 → Rerank 精排 Top-4
                         RetrievalAugmentationAdvisor.builder()
+                                // 检索前查询改写：结合对话历史把指代性追问改写成独立完整查询
+                                .queryTransformers(historyAwareQueryTransformer)
                                 // 自定义增强模板：默认模板强制"只准依据上下文、否则说不知道"，
                                 // 会压制对话历史，导致记忆失效；这里明确允许结合历史回答
                                 .queryAugmenter(ContextualQueryAugmenter.builder()
@@ -74,9 +83,33 @@ public class AiConfig {
                                     if (candidates == null || candidates.isEmpty()) {
                                         return List.of();
                                     }
-                                    return rerankService.rerank(searchText, candidates, 4);
+                                    List<Document> documents = rerankService.rerank(searchText, candidates, 4);
+                                    emitSourceFiles(query, documents, toolCallTracker);
+                                    return documents;
                                 })
                                 .build())
                 .build();
+    }
+
+    /** 检索完成后提取去重文件名，通过 ToolCallTracker 推送给前端展示参考来源 */
+    private void emitSourceFiles(Query query, List<Document> documents, ToolCallTracker toolCallTracker) {
+        Set<String> fileNames = new LinkedHashSet<>();
+        for (Document doc : documents) {
+            // 相关度过低的片段不作为来源展示（如闲聊问题误召回的内容）
+            if (doc.getScore() < SOURCE_MIN_SCORE) {
+                continue;
+            }
+            Object fileName = doc.getMetadata().get("fileName");
+            if (fileName != null && !fileName.toString().isBlank()) {
+                fileNames.add(fileName.toString());
+            }
+        }
+        if (fileNames.isEmpty()) {
+            return;
+        }
+        Object conversationId = query.context().get(ChatMemory.CONVERSATION_ID);
+        if (conversationId != null) {
+            toolCallTracker.emitSources(conversationId.toString(), List.copyOf(fileNames));
+        }
     }
 }

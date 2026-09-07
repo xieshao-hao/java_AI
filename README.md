@@ -19,9 +19,15 @@
 ### 📚 RAG 知识库检索
 - 两阶段检索：Milvus 向量召回 Top-20（相似度阈值 0.3）→ `bge-reranker-v2-m3` 精排 Top-4
 - Rerank 服务异常时自动降级为向量召回的前 4 个结果，保证服务可用
+- **多轮查询改写**：`HistoryAwareQueryTransformer` 结合对话历史，将指代性追问（如"它的第二点是什么"）用 LLM 改写成独立完整查询后再检索，改写失败自动降级为原始查询
 - 自定义 `ContextualQueryAugmenter` 增强模板，允许模型结合对话历史与知识库上下文共同回答
 - 文档片段携带 `【文档标题：xxx】` 前缀，支持按文件名语义检索
 - 检索流程实时推送到前端（"正在检索知识库..." 等工具调用事件）
+
+### 🔖 来源引用展示
+- 回答下方自动展示「📚 参考来源」蓝色气泡，列出本次检索命中的文档名（去重、按相关性排序）
+- 相关度门槛过滤：相似度低于 0.5 的片段不作为来源展示，避免闲聊误召回内容误导用户
+- 纯工具调用 / 闲聊回答不显示来源气泡
 
 ### 🦾 工具调用（Function Calling）
 | 工具 | 功能 |
@@ -41,6 +47,7 @@
 ### 🖥️ Web 前端
 - 内置单页聊天界面（`static/index.html`）
 - 流式打字机效果、工具调用状态提示
+- **左侧会话侧边栏**：会话列表、切换会话回显历史、新建会话、删除会话
 - 页面内直接上传文档、管理知识库文档列表
 
 ## 技术栈
@@ -112,7 +119,10 @@ mvn spring-boot:run
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/chat?msg=&conversationId=` | 同步对话 |
-| GET | `/chat/stream?msg=&conversationId=` | SSE 流式对话（含工具调用事件） |
+| GET | `/chat/stream?msg=&conversationId=` | SSE 流式对话（含工具调用与来源事件） |
+| GET | `/conversations` | 会话列表（标题 + 消息数 + 最后预览） |
+| GET | `/conversations/{id}/messages` | 历史消息回显 |
+| DELETE | `/conversations/{id}` | 删除会话（同时清 Redis 持久化） |
 | POST | `/knowledge/upload?file=` | 上传文档入库 |
 | GET | `/knowledge/documents` | 查询文档清单 |
 | DELETE | `/knowledge/document?fileName=` | 按文件名删除文档 |
@@ -121,8 +131,10 @@ mvn spring-boot:run
 
 ```
 src/main/java/com/example/java_ai/
-├── AiConfig.java                  # ChatClient / ChatMemory / RAG Advisor 配置
+├── AiConfig.java                  # ChatClient / ChatMemory / RAG Advisor 配置（含来源收集）
 ├── ChatController.java            # 对话接口（同步 + SSE 流式）
+├── ConversationController.java    # 会话管理接口（列表 / 历史回显 / 删除）
+├── HistoryAwareQueryTransformer.java # 多轮查询改写（LLM 重写追问为独立查询）
 ├── KnowledgeBaseController.java   # 知识库管理接口
 ├── KnowledgeBaseService.java      # 文档解析、切分、入库、删除、查询
 ├── KnowledgeTools.java            # Function Calling 工具集

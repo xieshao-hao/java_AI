@@ -42,7 +42,9 @@ public class ChatController {
                 .content()
                 .cache();
         Flux<String> toolEvents = toolCallTracker.open(conversationId)
-                .takeUntilOther(content.ignoreElements());
+                .takeUntilOther(content.ignoreElements())
+                // 无论正常完成、出错还是用户中断，都回收 sink，防止内存泄漏
+                .doFinally(signal -> toolCallTracker.close(conversationId));
         return Flux.merge(content, toolEvents);
     }
 }
