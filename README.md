@@ -171,7 +171,13 @@ src/main/java/com/example/java_ai/
 │   ├── AgentContext.java          # Agent 输入上下文（含改写后查询）
 │   ├── AgentDispatcher.java       # 意图 → Agent 分发器（自动注册，双保险兜底）
 │   ├── ChatAgent.java             # 闲聊 Agent（无 RAG 最短链）
-│   └── KbAgent.java               # 知识库 Agent（完整 RAG 链）
+│   ├── KbAgent.java               # 知识库 Agent（完整 RAG 链）
+│   ├── OpsAgent.java              # 运维 Agent（设备/告警/工单，工具调用 + 循环控制接入）
+│   ├── ReActGuardState.java       # 请求级循环控制状态（轮数/调用指纹/软拦截标志，toolContext 传递）
+│   ├── LoopGuardToolCallingManager.java # ReAct 循环守卫（替换默认 ToolCallingManager，两级拦截）
+│   └── ReActTerminatedException.java    # 循环强制终止异常（OpsAgent 捕获后转兜底话术）
+├── tools/                         # 运维工具层
+│   └── OpsTools.java              # 设备状态/告警检索/工单创建查询（@Tool 注册给 OpsAgent）
 └── JavaAiApplication.java         # 启动类
 ```
 
@@ -184,5 +190,8 @@ src/main/java/com/example/java_ai/
 - **记忆与 RAG 共存**：`MessageChatMemoryAdvisor` 注入的消息列表会被 RAG 流程重建时丢弃，因此知识库链路改用 `PromptChatMemoryAdvisor` 将历史写入 system 消息文本，两条链路互不干扰
 - **RAG 增强模板变量**：`ContextualQueryAugmenter` 自定义模板必须使用框架注入的 `{query}` 与 `{context}` 变量名，使用其他名称（如 `{query_context}`）会导致模板渲染校验失败
 - **Agent 开闭原则**：新增 Agent 只需实现 `Agent` 接口并标注 `@Component`，`AgentDispatcher` 通过 Spring 注入 `List<Agent>` 自动注册，分发器代码零修改
+- **ReAct 循环两级防护**：Spring AI 1.0.x 无 `maxIterations`，用装饰器模式包装 `DefaultToolCallingManager` 实现软拦截（重复指纹注入终止指令，让模型自然收口）+ 硬终止（超 `MAX_ROUNDS` 抛异常，`onErrorResume` 转兜底话术）；软拦截优先给模型自我收口的机会，硬终止保证循环必然结束，两者都不依赖模型自觉
+- **防护分层：循环守卫 ≠ 提示词约束**：`LoopGuardToolCallingManager` 只能拦截"已发起的工具调用"（重复调用/轮数失控）；"该调工具却只输出文本"（如反复确认、谎报创建成功）发生在模型输出层，守卫触达不到，需靠系统提示词约束（信息齐全直接建单 / 仅有工具返回真实编号才能报成功）——两层问题两层防护，缺一不可
+- **状态请求级隔离**：循环控制状态经 `toolContext` 随请求传入、请求结束即回收，不用单例字段存状态，天然避免并发请求间的状态串扰与内存泄漏
 - **密钥安全**：API Key 通过 `application-local.yml` 多 Profile 机制加载，该文件已加入 .gitignore
 - **文件名可检索**：切分后的片段文本头部追加 `【文档标题：{fileName}】`，使"按名称找文档"这类查询也能通过语义匹配命中
