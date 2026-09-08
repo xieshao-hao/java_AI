@@ -1,6 +1,22 @@
 spring:
   profiles:
     active: local
+  datasource:
+    # H2 文件模式：数据随应用启停持久化（db 文件生成在项目根 data/ 目录，已加入 .gitignore）
+    url: jdbc:h2:file:./data/smartdesk
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    # 必须显式关闭 ddl-auto：H2 属于嵌入式库，Spring Boot 默认 create-drop 会在停机时删表
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+      encoding: UTF-8
   data:
     redis:
       host: localhost

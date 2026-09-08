@@ -7,6 +7,8 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+import java.util.List;
+
 /** 闲聊 Agent：无 RAG 无工具，最短链路，省检索成本与延迟 */
 @Component
 public class ChatAgent implements Agent {
@@ -22,8 +24,8 @@ public class ChatAgent implements Agent {
     }
 
     @Override
-    public RouteIntent supportIntent() {
-        return RouteIntent.CHITCHAT;
+    public List<RouteIntent> supportIntents() {
+        return List.of(RouteIntent.CHITCHAT);
     }
 
     @Override
