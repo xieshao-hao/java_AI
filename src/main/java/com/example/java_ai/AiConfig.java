@@ -37,7 +37,6 @@ public class AiConfig {
     @Bean
     ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore, ChatMemory chatMemory,
                           KnowledgeTools knowledgeTools, RerankService rerankService,
-                          HistoryAwareQueryTransformer historyAwareQueryTransformer,
                           ToolCallTracker toolCallTracker) {
         return builder
                 .defaultSystem("你是一个友好、严谨的中文 AI 助手。请使用简洁的中文回答用户的问题，"
@@ -51,8 +50,8 @@ public class AiConfig {
                         PromptChatMemoryAdvisor.builder(chatMemory).build(),
                         // 两阶段 RAG 检索：向量召回 Top-20 → Rerank 精排 Top-4
                         RetrievalAugmentationAdvisor.builder()
-                                // 检索前查询改写：结合对话历史把指代性追问改写成独立完整查询
-                                .queryTransformers(historyAwareQueryTransformer)
+                                // 查询改写已上移到 IntentRouter（改写+意图分类合并为一次 LLM 调用），
+                                // RAG 层不再重复改写，直接使用路由层输出的独立完整查询
                                 // 自定义增强模板：默认模板强制"只准依据上下文、否则说不知道"，
                                 // 会压制对话历史，导致记忆失效；这里明确允许结合历史回答
                                 .queryAugmenter(ContextualQueryAugmenter.builder()

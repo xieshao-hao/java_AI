@@ -1,6 +1,6 @@
 # Java AI 智能知识库助手
 
-基于 Spring Boot 3.5 + Spring AI 1.0.9 构建的智能对话应用，融合 **RAG（检索增强生成）**、**Function Calling（工具调用）** 与 **跨会话持久化对话记忆**，支持上传私有文档构建个人知识库。
+基于 Spring Boot 3.5 + Spring AI 1.0.9 构建的**意图路由 + 多 Agent 智能对话应用**，融合 **意图识别路由**、**RAG（检索增强生成）**、**Function Calling（工具调用）** 与 **跨会话持久化对话记忆**，支持上传私有文档构建个人知识库。
 
 ## 功能特性
 
@@ -8,6 +8,13 @@
 - 接入 DeepSeek（`deepseek-chat`）大模型，OpenAI 兼容协议
 - 支持 SSE 流式输出与同步调用两种模式（`/chat`、`/chat/stream`）
 - 会话隔离：前端通过 `conversationId` 区分不同会话，存储于 sessionStorage，刷新页面不丢失
+
+### 🧭 意图路由与多 Agent 分发
+- **三段式路由**：规则快筛（<1ms，确定性短指令）→ Redis 缓存命中（同问题不重复分类）→ LLM 意图分类（置信度阈值 0.8）
+- **改写与分类合一**：LLM 路由一次调用同时完成多轮指代消解（"它的第二点是什么" → 独立完整查询）与意图分类，延迟减半
+- **按意图分发到独立 Agent**：闲聊走无 RAG 最短链路（零检索成本），知识库问题走完整 RAG 链路
+- **路由永不失败**：LLM 异常 / 置信度不足 / 无对应 Agent 时统一降级到知识库 Agent 兜底，形成全链路降级体系
+- 路由决策结果缓存（Redis TTL 1 小时），并输出结构化日志：输入 → 改写 → 意图 → 置信度 → 来源 → 耗时（M4 可观测性埋点）
 
 ### 🧠 对话记忆持久化
 - 自定义 `RedisChatMemoryRepository`，将对话历史持久化到 Redis（TTL 7 天，活跃会话自动续期）
@@ -19,7 +26,7 @@
 ### 📚 RAG 知识库检索
 - 两阶段检索：Milvus 向量召回 Top-20（相似度阈值 0.3）→ `bge-reranker-v2-m3` 精排 Top-4
 - Rerank 服务异常时自动降级为向量召回的前 4 个结果，保证服务可用
-- **多轮查询改写**：`HistoryAwareQueryTransformer` 结合对话历史，将指代性追问（如"它的第二点是什么"）用 LLM 改写成独立完整查询后再检索，改写失败自动降级为原始查询
+- **多轮查询改写**：查询改写已上移到意图路由层（改写 + 意图分类合并为一次 LLM 调用），三个 Agent 共享改写后的独立完整查询，RAG 层不再重复改写
 - 自定义 `ContextualQueryAugmenter` 增强模板，允许模型结合对话历史与知识库上下文共同回答
 - 文档片段携带 `【文档标题：xxx】` 前缀，支持按文件名语义检索
 - 检索流程实时推送到前端（"正在检索知识库..." 等工具调用事件）
@@ -68,15 +75,26 @@
 用户提问
    │
    ▼
-PromptChatMemoryAdvisor ──► 注入 Redis 中的对话历史（最近 20 条）
+IntentRouter 意图路由（三段式）
+   ├─ ① 规则快筛（<1ms，确定性短指令）
+   ├─ ② Redis 缓存命中（TTL 1h）
+   └─ ③ LLM 改写 + 意图分类（一次调用，置信度 ≥ 0.8）── 失败/低分 ──► 知识库兜底
    │
    ▼
-RetrievalAugmentationAdvisor
-   ├─ Milvus 向量召回 Top-20（相似度 ≥ 0.3）
-   └─ bge-reranker-v2-m3 精排 Top-4 ──► 失败自动降级
-   │
-   ▼
-DeepSeek Chat Model ◄── 必要时调用 Tools（检索/统计/时间/计算）
+AgentDispatcher 按意图分发
+   ├─ CHITCHAT ──► ChatAgent（无 RAG 最短链，仅记忆）
+   └─ KNOWLEDGE ──► KbAgent（完整 RAG 链，见下）
+         │
+         ▼
+      PromptChatMemoryAdvisor ──► 注入 Redis 对话历史（最近 20 条）
+         │
+         ▼
+      RetrievalAugmentationAdvisor
+         ├─ Milvus 向量召回 Top-20（相似度 ≥ 0.3）
+         └─ bge-reranker-v2-m3 精排 Top-4 ──► 失败自动降级
+         │
+         ▼
+      DeepSeek Chat Model ◄── 必要时调用 Tools（检索/统计/时间/计算）
    │
    ▼
 SSE 流式返回前端（含工具调用事件）
@@ -131,22 +149,40 @@ mvn spring-boot:run
 
 ```
 src/main/java/com/example/java_ai/
-├── AiConfig.java                  # ChatClient / ChatMemory / RAG Advisor 配置（含来源收集）
-├── ChatController.java            # 对话接口（同步 + SSE 流式）
+├── AiConfig.java                  # KbAgent 专用 ChatClient / ChatMemory / RAG Advisor 配置（含来源收集）
+├── ChatController.java            # 对话接口（同步 + SSE 流式），路由 → 分发 → Agent
 ├── ConversationController.java    # 会话管理接口（列表 / 历史回显 / 删除）
-├── HistoryAwareQueryTransformer.java # 多轮查询改写（LLM 重写追问为独立查询）
+├── HistoryAwareQueryTransformer.java # 多轮查询改写（已被路由层改写替代，待删除）
 ├── KnowledgeBaseController.java   # 知识库管理接口
 ├── KnowledgeBaseService.java      # 文档解析、切分、入库、删除、查询
 ├── KnowledgeTools.java            # Function Calling 工具集
 ├── RerankService.java             # bge-reranker 精排服务（含降级）
 ├── RedisChatMemoryRepository.java # Redis 对话记忆持久化（7 天 TTL）
 ├── ToolCallTracker.java           # 工具调用事件推送（SSE）
+├── router/                        # 意图路由层
+│   ├── RouteIntent.java           # 意图枚举（闲聊/设备/工单/知识库）
+│   ├── RouteDecision.java         # 路由决策（意图/置信度/改写查询/来源/耗时）
+│   ├── LlmRouteResult.java        # LLM 结构化输出（改写 + 分类合一）
+│   ├── RuleIntentMatcher.java     # 规则快筛（确定性短指令）
+│   ├── RouterConfig.java          # 意图分类器 ChatClient（温度 0）
+│   └── IntentRouter.java          # 路由编排：规则 → 缓存 → LLM → 兜底
+├── agent/                         # Agent 接口层
+│   ├── Agent.java                 # Agent 抽象接口（声明意图 + 处理入口）
+│   ├── AgentContext.java          # Agent 输入上下文（含改写后查询）
+│   ├── AgentDispatcher.java       # 意图 → Agent 分发器（自动注册，双保险兜底）
+│   ├── ChatAgent.java             # 闲聊 Agent（无 RAG 最短链）
+│   └── KbAgent.java               # 知识库 Agent（完整 RAG 链）
 └── JavaAiApplication.java         # 启动类
 ```
 
 ## 关键设计说明
 
-- **记忆与 RAG 共存**：`MessageChatMemoryAdvisor` 注入的消息列表会被 RAG 流程重建时丢弃，因此改用 `PromptChatMemoryAdvisor` 将历史写入 system 消息文本，两条链路互不干扰
+- **意图路由三段式**：规则快筛（零成本处理确定性短指令）→ Redis 缓存（重复问题 <10ms）→ LLM 改写 + 分类合一（延迟减半）。规则层"宁可漏放不可错放"——错放的输入会绕过 LLM 校验，是路由质量的最大杀手
+- **路由永不失败（全链路降级体系）**：LLM 异常 / 意图置信度 < 0.8 / 分发层无对应 Agent，统一降级到知识库 Agent；与 rerank 失败降级 Top-4 同一设计哲学：宁可能力降级，不可服务中断
+- **查询改写上移**：多轮指代消解从 RAG 层上移到路由层（与意图分类合并为一次 LLM 调用），三个 Agent 都受益于干净输入；RAG 层不再重复改写，避免双重 LLM 调用与语义二次漂移
+- **记忆策略按链路差异化**：KbAgent 因 RAG 消息重建问题使用 `PromptChatMemoryAdvisor`（历史注入 system 消息），ChatAgent 无 RAG 故可用 `MessageChatMemoryAdvisor`；两者共享同一个 `ChatMemory` Bean，保证会话历史跨 Agent 互通
+- **记忆与 RAG 共存**：`MessageChatMemoryAdvisor` 注入的消息列表会被 RAG 流程重建时丢弃，因此知识库链路改用 `PromptChatMemoryAdvisor` 将历史写入 system 消息文本，两条链路互不干扰
 - **RAG 增强模板变量**：`ContextualQueryAugmenter` 自定义模板必须使用框架注入的 `{query}` 与 `{context}` 变量名，使用其他名称（如 `{query_context}`）会导致模板渲染校验失败
+- **Agent 开闭原则**：新增 Agent 只需实现 `Agent` 接口并标注 `@Component`，`AgentDispatcher` 通过 Spring 注入 `List<Agent>` 自动注册，分发器代码零修改
 - **密钥安全**：API Key 通过 `application-local.yml` 多 Profile 机制加载，该文件已加入 .gitignore
 - **文件名可检索**：切分后的片段文本头部追加 `【文档标题：{fileName}】`，使"按名称找文档"这类查询也能通过语义匹配命中

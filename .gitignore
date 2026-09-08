@@ -37,3 +37,6 @@ src/main/resources/application-local.yml
 
 ### Docker 数据卷（不上传） ###
 volumes/
+
+### 本地测试文档（不上传） ###
+test-docs/
